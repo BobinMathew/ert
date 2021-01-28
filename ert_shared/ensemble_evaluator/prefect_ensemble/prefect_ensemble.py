@@ -6,6 +6,7 @@ import multiprocessing
 import signal
 import threading
 import asyncio
+from typing import Callable
 from pathlib import Path
 from datetime import timedelta
 from functools import partial
@@ -98,6 +99,11 @@ def gen_coef(parameters, real, config):
     return paths
 
 
+class StepType:
+    function = "function"
+    unix = "unix"
+
+
 class PrefectEnsemble(_Ensemble):
     def __init__(self, config):
         self.config = config
@@ -116,15 +122,21 @@ class PrefectEnsemble(_Ensemble):
                 stage_id = uuid.uuid4()
                 for step in stage["steps"]:
                     jobs = []
-                    for job in step["jobs"]:
+                    step_type = step.get("type", "unix")
+                    if step_type == StepType.unix:
+                        for job in step.get("jobs", []):
+                            job_id = uuid.uuid4()
+                            jobs.append(_BaseJob(id_=str(job_id), name=job["name"]))
+                    elif step_type == StepType.function:
                         job_id = uuid.uuid4()
-                        jobs.append(_BaseJob(id_=str(job_id), name=job["name"]))
+                        jobs.append(_BaseJob(id_=str(job_id), name=step["name"]))
+
                     step_id = uuid.uuid4()
                     steps.append(
                         _Step(
                             id_=str(step_id),
                             inputs=step.get("inputs", []),
-                            outputs=step["outputs"],
+                            outputs=step.get("outputs", []),
                             jobs=jobs,
                             name=step["name"],
                         )
@@ -180,9 +192,7 @@ class PrefectEnsemble(_Ensemble):
                             step_name=step["name"],
                             job_index=idx,
                         ),
-                        "name": job.get("name"),
-                        "executable": job.get("executable"),
-                        "args": job.get("args", []),
+                        **job,
                     }
                     for idx, job in enumerate(step.get("jobs", []))
                 ]
@@ -206,7 +216,7 @@ class PrefectEnsemble(_Ensemble):
             for element in table_of_elements:
                 if set(element.get("inputs", [])).issubset(temp_list):
                     ordering.append(element)
-                    produced = produced.union(set(element["outputs"]))
+                    produced = produced.union(set(element.get("outputs", [])))
                     table_of_elements.remove(element)
         return ordering
 
@@ -214,7 +224,8 @@ class PrefectEnsemble(_Ensemble):
         with Flow(f"Realization range {real_range}") as flow:
             for iens in real_range:
                 output_to_res = {}
-                for step in self.get_ordering(iens=iens):
+                ordering = self.get_ordering(iens=iens)
+                for step in ordering:
                     inputs = [
                         output_to_res.get(input, []) for input in step.get("inputs", [])
                     ]
@@ -232,7 +243,7 @@ class PrefectEnsemble(_Ensemble):
                         on_failure=partial(self._on_task_failure, url=dispatch_url),
                         run_path=self.config.get("run_path"),
                         storage_config=self.config.get("storage"),
-                        max_retries=self.config.get("max_retries", 2),
+                        max_retries=self.config.get("max_retries", 0),
                         retry_delay=timedelta(seconds=2)
                         if self.config.get("max_retries") > 0
                         else None,

@@ -3,7 +3,7 @@ import pathlib
 import pydantic
 import pytest
 import shutil
-
+from typing import Callable
 import ert3
 
 
@@ -39,7 +39,7 @@ def test_entry_point(tmpdir):
     "config, expected_error",
     (
         [{"not_a_key": "value"}, "1 validation error"],
-        [[{"not_a_key": "value"}], "5 validation errors"],
+        [[{"not_a_key": "value"}], "3 validation errors"],
     ),
 )
 def test_entry_point_not_valid(config, expected_error):
@@ -55,12 +55,30 @@ def test_step_valid():
                 "input": [{"record": "some_record", "location": "some_location"}],
                 "output": [{"record": "some_record", "location": "some_location"}],
                 "transportable_commands": [{"name": "poly", "location": "poly.py"}],
-                "script": ["poly --help"],
+                "transportable_functions": [{"name": "sum", "args": "is.json"}],
+                "script": ["poly --help", "builtins:sum"],
             }
         ]
     )
     assert config[0].name == "some_name"
     assert config[0].script[0] == "poly --help"
+    assert isinstance(config[0].script[1], Callable)
+
+
+def test_single_function_step_valid():
+    config = ert3.config.load_stages_config(
+        [
+            {
+                "name": "minimal_function_stage",
+                "transportable_functions": [{"name": "sum", "args": "args.json"}],
+                "output": [{"record": "some_record", "location": "some_location"}],
+                "script": ["builtins:sum"],
+            }
+        ]
+    )
+    assert config[0].name == "minimal_function_stage"
+    assert isinstance(config[0].script[0], Callable)
+    assert config[0].script[0].__name__ == "sum"
 
 
 def test_step_multi_cmd(tmpdir):
@@ -70,11 +88,19 @@ def test_step_multi_cmd(tmpdir):
 
     config = _example_config()
     config[0]["transportable_commands"].append({"name": "poly2", "location": "poly2"})
+    config[0]["transportable_functions"] = [
+        {"name": "sum", "args": "args.json"},
+        {"name": "polynomial", "args": "coefficients"},
+    ]
     config[0]["script"] = [
         "poly run1",
+        "builtins:sum",
         "poly2 gogo",
+        "ert3.evaluator.poly:polynomial",
         "poly run2",
+        "ert3.evaluator.poly:polynomial",
         "poly2 abort",
+        "builtins:sum",
     ]
     config = ert3.config.load_stages_config(config)
 
@@ -128,19 +154,46 @@ def test_step_unknown_script(tmpdir):
         ert3.config.load_stages_config(config)
 
 
-def test_stages_get_script():
+def test_step_unknown_function():
+    with pytest.raises(
+        pydantic.error_wrappers.ValidationError,
+        match=r"sum is not a known function",
+    ):
+        ert3.config.load_stages_config(
+            [
+                {
+                    "name": "minimal_function_stage",
+                    "output": [{"record": "some_record", "location": "some_location"}],
+                    "script": ["builtins:sum"],
+                }
+            ]
+        )
+
+
+def test_mutli_stages_get_script():
     config = ert3.config.load_stages_config(
         [
             {
-                "name": "some_name",
+                "name": "stage_1",
                 "input": [{"record": "some_record", "location": "some_file"}],
                 "output": [{"record": "some_record", "location": "some_file"}],
                 "transportable_commands": [{"name": "poly", "location": "poly.py"}],
                 "script": [
                     "poly --coefficients coefficients.json --output output.json"
                 ],
-            }
+            },
+            {
+                "name": "stage_2",
+                "output": [{"record": "some_record", "location": "some_file"}],
+                "transportable_functions": [{"name": "sum", "args": "args.json"}],
+                "script": ["builtins:sum"],
+            },
         ]
     )
-    step = config.step_from_key("some_name")
-    assert step.script == ["poly --coefficients coefficients.json --output output.json"]
+    step1 = config.step_from_key("stage_1")
+    assert step1.script == [
+        "poly --coefficients coefficients.json --output output.json"
+    ]
+    step2 = config.step_from_key("stage_2")
+    assert len(step2.script) == 1
+    assert isinstance(step2.script[0], Callable)
