@@ -170,6 +170,25 @@ def test_step_unknown_function():
         )
 
 
+def test_step_function_ouput_not_defined():
+    with pytest.raises(
+        pydantic.error_wrappers.ValidationError,
+        match=r"is not a defined ouput location",
+    ):
+        ert3.config.load_stages_config(
+            [
+                {
+                    "name": "minimal_function_stage",
+                    "transportable_functions": [
+                        {"name": "sum", "args": "args.json", "out": "some_location"}
+                    ],
+                    "output": [],
+                    "script": ["builtins:sum"],
+                }
+            ]
+        )
+
+
 def test_mutli_stages_get_script():
     config = ert3.config.load_stages_config(
         [
@@ -184,8 +203,10 @@ def test_mutli_stages_get_script():
             },
             {
                 "name": "stage_2",
-                "output": [{"record": "some_record", "location": "some_file"}],
-                "transportable_functions": [{"name": "sum", "args": "args.json"}],
+                "output": [{"record": "fun_record", "location": "fun_file"}],
+                "transportable_functions": [
+                    {"name": "sum", "args": "args.json", "out": "fun_file"}
+                ],
                 "script": ["builtins:sum"],
             },
         ]

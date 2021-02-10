@@ -111,9 +111,12 @@ class UnixStep(Task):
     def run_function_job(self, client, job, run_path):
         try:
             with working_directory(run_path):
-                with open(job["args"]) as f:
+                with open(job["args"], "r") as f:
                     inputs = json.load(f)
-                job["executable"](**inputs)
+                result = job["executable"](**inputs)
+                if result is not None and job["out"] is not None:
+                    with open(job["out"], "w") as f:
+                        json.dump(result, f)
         except Exception as e:
             self.logger.error(str(e))
             event = CloudEvent(

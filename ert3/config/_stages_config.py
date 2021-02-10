@@ -3,6 +3,7 @@ import os
 from typing import List, Callable, Optional, Union
 from pydantic import root_validator, validator, FilePath, BaseModel
 
+
 def _import_from(path):
     if not isinstance(path, str):
         raise ValueError(f"Script must be type <str> is: {type(path)}")
@@ -53,6 +54,7 @@ class TransportableCommand(_StagesConfig):
 class TransportableFunction(_StagesConfig):
     name: str
     args: str
+    out: Optional[str]
 
 
 class Step(_StagesConfig):
@@ -63,17 +65,17 @@ class Step(_StagesConfig):
     transportable_commands: Optional[List[TransportableCommand]] = []
     transportable_functions: Optional[List[TransportableFunction]] = []
 
-    def outputs(self):
+    def output_locations(self):
         return [out.location for out in self.output]
-
-    def inputs(self):
-        return [input.location for input in self.input]
 
     def command_location(self, name):
         return next(cmd.location for cmd in self.transportable_commands if cmd.name == name)
 
     def function_args(self, name):
         return next(fun.args for fun in self.transportable_functions if fun.name == name)
+
+    def function_out(self, name):
+        return next(fun.out for fun in self.transportable_functions if fun.name == name)
 
     def command_scripts(self):
         if self.transportable_commands:
@@ -83,11 +85,16 @@ class Step(_StagesConfig):
     @root_validator
     def check_defined(cls, step):
         cmd_names = [cmd.name for cmd in step.get("transportable_commands", [])]
-        fun_names = [fun.name for fun in step.get("transportable_functions", [])]
+        functions = {fun.name: fun.out for fun in step.get("transportable_functions", [])}
+        output_locations = [out.location for out in step.get("output", [])]
+
         for script in step.get("script", []):
             if isinstance(script, Callable):
-                if script.__name__ not in fun_names:
+                if script.__name__ not in functions:
                     raise ValueError("{} is not a known function".format(script.__name__))
+                fun_output = functions[script.__name__]
+                if fun_output is not None and not fun_output in output_locations:
+                    raise ValueError("{} is not a defined ouput location".format(fun_output))
             else:
                 line_cmd = script.split()[0]
                 if line_cmd not in cmd_names:
@@ -115,7 +122,8 @@ class StagesConfig(BaseModel):
                     jobs.append({
                         "name": script.__name__,
                         "executable": script,
-                        "args": stage.function_args(script.__name__)
+                        "args": stage.function_args(script.__name__),
+                        "out": stage.function_out(script.__name__)
                     })
                 else:
                     name, *args = script.split()
@@ -132,7 +140,7 @@ class StagesConfig(BaseModel):
                         "name": stage.name + "-only_step",
                         "resources": command_scripts,
                         "inputs": [],
-                        "outputs": stage.outputs(),
+                        "outputs": stage.output_locations(),
                         "jobs": jobs,
                     }
                 ]
